@@ -1,23 +1,36 @@
-from flask import Flask, request, render_template_string
-import subprocess
+from flask import Flask, request, render_template_string, send_from_directory
+import os
+import base64
+import datetime
 
 app = Flask(__name__)
 
-current_command = "none"
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+latest_label = "none"
+latest_image = None
+
+# ---------------- HTML for viewing ----------------
 html = """
-<h1>Raspberry Pi Control Panel</h1>
+<h1>Latest Uploaded Image</h1>
 
-<button onclick="fetch('/start/camera')">Start Camera</button>
-<button onclick="fetch('/stop/camera')">Stop Camera</button>
-
-<p>Status: <span id="status">unknown</span></p>
+<h2>Label: <span id="label">none</span></h2>
+<img id="img" width="400"/>
 
 <script>
-setInterval(async ()=>{
- let res = await fetch('/status')
- document.getElementById('status').innerText = await res.text()
-},1000)
+async function update(){
+    document.getElementById("label").innerText =
+        await (await fetch('/latest_label')).text()
+
+    let img = await (await fetch('/latest_image')).text()
+    if(img != "none"){
+        document.getElementById("img").src = "/uploads/" + img + "?t=" + new Date().getTime()
+    }
+}
+
+setInterval(update, 1000)
+update()
 </script>
 """
 
@@ -25,24 +38,42 @@ setInterval(async ()=>{
 def home():
     return render_template_string(html)
 
-@app.route("/start/<name>")
-def start(name):
-    global current_command
-    current_command = "start " + name
+# ---------------- Receive image from Pi ----------------
+@app.route("/upload", methods=["POST"])
+def upload():
+    global latest_label, latest_image
+
+    label = request.form.get("label", "unknown")
+    image_b64 = request.form.get("image")
+
+    if not image_b64:
+        return "No image provided", 400
+
+    # Use timestamp to prevent overwriting previous images
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{label}_{timestamp}.png"
+
+    with open(os.path.join(UPLOAD_FOLDER, filename), "wb") as f:
+        f.write(base64.b64decode(image_b64))
+
+    latest_label = label
+    latest_image = filename
+    print(f"Received image: {filename}")
+
     return "ok"
 
-@app.route("/stop/<name>")
-def stop(name):
-    global current_command
-    current_command = "stop " + name
-    return "ok"
+# ---------------- Serve uploaded images ----------------
+@app.route("/uploads/<filename>")
+def uploaded_file(filename):
+    return send_from_directory(UPLOAD_FOLDER, filename)
 
-@app.route("/command")
-def command():
-    return current_command
+@app.route("/latest_label")
+def get_label():
+    return latest_label
 
-@app.route("/status")
-def status():
-    return "running"
+@app.route("/latest_image")
+def get_image():
+    return latest_image if latest_image else "none"
 
-app.run(host="0.0.0.0", port=10000)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
